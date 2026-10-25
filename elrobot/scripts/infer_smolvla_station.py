@@ -39,7 +39,7 @@ async def timed_loop(args, client, stream, policy, pre, post, initial, report, o
     actions,seconds=await asyncio.to_thread(predict,policy,pre,post,batch,args.task)
     chunk_stamp=reference['source_local_stamp_ns']; chunk_id=reference['source_frame_id']
     station.validate_control(args,reference,reference,chunk_stamp)
-    started=time.monotonic(); deadline=started+args.episode_seconds; next_tick=started
+    started=time.monotonic(); deadline=float('inf') if args.continuous else started+args.episode_seconds; next_tick=started
     previous_id=chunk_id; index=0; pending=None; records=[]; predictions=[seconds]; ticks=[]
     report.update(initial_prediction_seconds=seconds,execution_status='running',actions=records)
 
@@ -111,7 +111,9 @@ async def timed_loop(args, client, stream, policy, pre, post, initial, report, o
 
 async def run(args):
     check_version()
-    if args.execute and args.episode_seconds is None:args.episode_seconds=10
+    if args.continuous and args.episode_seconds is not None:
+        raise ValueError('Use either --continuous or --episode-seconds')
+    if args.execute and args.episode_seconds is None and not args.continuous:args.episode_seconds=10
     if args.episode_seconds is not None and args.episode_seconds < 1:
         raise ValueError('--episode-seconds must be a positive number of seconds')
     if not 0<args.max_age<=3:raise ValueError('--max-age must be >0 and <=3 seconds')
@@ -153,9 +155,9 @@ async def run(args):
         batch,images,source=initial
         check_calibration(source,contract)
         for name,image in images.items():image.save(output/f'{name}.png')
-        report=dict(source,checkpoint=str(cp),policy='smolvla',task=args.task,commands_sent=False)
+        report=dict(source,checkpoint=str(cp),policy='smolvla',task=args.task,commands_sent=False,continuous=args.continuous)
         print('Calibration matches; camera inputs saved:',output,flush=True)
-        if args.episode_seconds is not None:
+        if args.continuous or args.episode_seconds is not None:
             await timed_loop(args,client,stream,policy,pre,post,initial,report,output,contract)
         else:
             actions,elapsed=await asyncio.to_thread(predict,policy,pre,post,batch,args.task)
@@ -179,7 +181,9 @@ def main():
     parser.add_argument('--max-age',type=float,default=1.0)
     parser.add_argument('--output-dir',type=Path)
     parser.add_argument('--execute',action='store_true')
-    parser.add_argument('--episode-seconds',type=int)
+    duration=parser.add_mutually_exclusive_group()
+    duration.add_argument('--episode-seconds',type=int)
+    duration.add_argument('--continuous',action='store_true',help='Keep planning/executing until Ctrl+C or a control check fails')
     parser.add_argument('--step-ticks',type=int,default=200)
     parser.add_argument('--max-delta-ticks',type=int,default=200)
     try:asyncio.run(run(parser.parse_args()))

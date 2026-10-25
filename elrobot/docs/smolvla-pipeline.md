@@ -42,6 +42,10 @@ bash scripts/infer_smolvla_station.sh  --host localhost   --checkpoint ../output
 
 This explicitly sends motor goals for up to 300 seconds. Caps are ticks per commanded movement, not episode step counts. For one prediction with zero motor commands, remove both `--execute` and `--episode-seconds 300`; keep the checkpoint/dataset arguments. Run reports and initial camera images go under `outputs/inference/`. Ctrl+C stops new goals but leaves the last servo goal active. Support the arm before `bash scripts/follower_torque.sh off --host localhost`.
 
+For continuous operation, replace `--episode-seconds 300` with `--continuous`.
+It runs until Ctrl+C or an existing control check fails. `--continuous` and
+`--episode-seconds` cannot be combined; `--execute` is still required for movement.
+
 ## Train SmolVLA or ACT
 
 From `elrobot`, select the prepared dataset explicitly; historical script defaults use older datasets:
