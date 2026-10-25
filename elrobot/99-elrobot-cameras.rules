@@ -1,0 +1,3 @@
+# Norma-core Linux camera driver opens libusb device nodes directly.
+# Restrict access to the two KD-USB cameras' vendor/product, via video group.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2c7f", ATTR{idProduct}=="4a60", GROUP="video", MODE="0660"

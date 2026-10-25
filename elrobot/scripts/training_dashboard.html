@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ACT training monitor</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f5f7;color:#192b38;font:15px system-ui,sans-serif}main{max-width:1400px;margin:auto;padding:28px}h1{margin:0 0 8px}h2{font-size:18px;margin:0 0 10px}p{line-height:1.5}.muted,small{color:#526574}.path{overflow-wrap:anywhere;font-family:monospace;font-size:12px}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0}.card,.panel{background:white;border:1px solid #dbe2e8;border-radius:12px;padding:18px}.value{font-size:27px;font-weight:650;margin-top:6px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}canvas{width:100%;height:240px;display:block}.panel p{font-size:13px;margin-bottom:0}.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-bottom:8px}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}.wide{margin-top:16px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:10px;border-bottom:1px solid #e8edf1}th{color:#526574}.tablewrap{max-height:380px;overflow:auto}.best{background:#edf8f3}.notice{padding:12px;border-radius:8px;background:#fff2d8;margin:12px 0}li{margin:9px 0;line-height:1.45}#tooltip{position:fixed;display:none;pointer-events:none;background:#192b38;color:white;padding:8px 10px;border-radius:6px;font-size:12px;z-index:2;white-space:pre-line}progress{width:100%;height:9px;accent-color:#167b6a}a{color:#167b6a}@media(max-width:760px){main{padding:16px}.grid{grid-template-columns:1fr}.cards{grid-template-columns:1fr 1fr}}
+</style>
+<main>
+<h1>ACT training monitor</h1><div id="status" class="muted">Connecting…</div><p id="path" class="path"></p><progress id="progress" value="0" max="5000"></progress>
+<div class="cards"><div class="card">Latest logged update<div class="value" id="step">—</div></div><div class="card">Lowest validation loss<div class="value" id="best">—</div><small id="beststep"></small></div><div class="card">Best saved checkpoint<div class="value" id="saved">—</div><small id="savedloss"></small></div><div class="card">Latest GPU allocation<div class="value" id="memory">—</div><small id="lr"></small></div></div>
+<div id="warnings"></div>
+<div class="grid">
+<section class="panel"><h2>Action error and validation</h2><div id="errorLegend" class="legend"></div><canvas id="error"></canvas><p>Prefer a sustained decline in validation loss. Training L1 and validation use different latent behavior; compare their trends, not their absolute gap.</p></section>
+<section class="panel"><h2>Training loss components</h2><div id="lossLegend" class="legend"></div><canvas id="loss"></canvas><p>Total training loss = L1 action error + 10 × KL regularization for this ACT configuration. KL is not a motor-position error.</p></section>
+<section class="panel"><h2>Gradient norm</h2><div id="gradientLegend" class="legend"></div><canvas id="gradient"></canvas><p>Check sustained spikes together with worsening loss. Non-finite values need investigation; there is no universal good gradient threshold.</p></section>
+<section class="panel"><h2>Training throughput</h2><div id="throughputLegend" class="legend"></div><canvas id="throughput"></canvas><p>Samples per second for training updates. Validation and checkpoint saving add pauses that this metric does not fully capture.</p></section>
+<section class="panel"><h2>Time per update and data load</h2><div id="timingLegend" class="legend"></div><canvas id="timing"></canvas><p>Seconds per training update/window. If data loading consistently dominates, inspect the data pipeline before changing the policy.</p></section>
+<section class="panel"><h2>GPU memory allocated</h2><div id="gpuLegend" class="legend"></div><canvas id="gpu"></canvas><p>Trainer-reported allocation in GB, not total GPU usage or free memory. Watch training logs for CUDA out-of-memory errors.</p></section>
+</div>
+<section class="panel wide"><h2>Validation and saved checkpoints</h2><p class="muted">Training metrics use the latest logged sample at or before the checkpoint step. “Saved” means model, optimizer, and training-step files exist.</p><div class="tablewrap"><table><thead><tr><th>Step</th><th>Validation</th><th>Checkpoint</th><th>Train sample</th><th>L1</th><th>Total loss</th><th>Gradient</th><th>Samples/s</th><th>GB</th></tr></thead><tbody id="checkpoints"></tbody></table></div></section>
+<section class="panel wide"><h2>What to monitor</h2><ul>
+<li><b>Both losses improving:</b> continue the planned run. A few noisy evaluations are normal.</li>
+<li><b>Training improves while validation worsens repeatedly:</b> possible overfitting. Compare earlier saved checkpoints; do not automatically choose the final model.</li>
+<li><b>Both flatten:</b> more updates may add little. Review demonstration quality and task-phase errors before changing several settings.</li>
+<li><b>Startup checks:</b> this run should report 2,408 training frames and 723 validation frames. Both cameras are 224×224; top is already cropped in the prepared dataset.</li>
+<li><b>Interpretation:</b> there is no universal good loss threshold. Normalization/splits differ between runs, so raw losses are not directly comparable across datasets. Low offline loss does not establish successful cheese placement.</li>
+<li><b>Coverage:</b> these logs contain aggregate errors, not per-joint or grasp/release accuracy. The dashboard does not run a model, evaluate task success, or control hardware.</li>
+</ul><p id="split" class="muted"></p></section>
+</main><div id="tooltip"></div>
+<script>
+const $=id=>document.getElementById(id), fmt=(v,n=3)=>Number.isFinite(v)?v.toFixed(n):'—';
+const tooltip=$('tooltip');let current=null;
+function series(name,color,rows,key,scale=1){return{name,color,points:rows.filter(r=>Number.isFinite(r[key])).map(r=>[r.step,r[key]*scale])}}
+function plot(id,ss,saved){
+ const c=$(id),ctx=c.getContext('2d'),w=c.clientWidth,h=240,dpr=devicePixelRatio||1;c.width=w*dpr;c.height=h*dpr;ctx.scale(dpr,dpr);
+ const all=ss.flatMap(s=>s.points),pad={l:54,r:14,t:12,b:30},pw=w-pad.l-pad.r,ph=h-pad.t-pad.b;
+ const xmax=Math.max(1,...all.map(p=>p[0])),ymax=Math.max(.00001,...all.map(p=>p[1]))*1.08;
+ const x=v=>pad.l+v/xmax*pw,y=v=>pad.t+ph-v/ymax*ph;
+ ctx.font='11px system-ui';ctx.fillStyle='#526574';ctx.strokeStyle='#e7edf1';ctx.lineWidth=1;
+ for(let i=0;i<=4;i++){const yy=pad.t+i*ph/4;ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(w-pad.r,yy);ctx.stroke();ctx.fillText((ymax*(1-i/4)).toPrecision(3),2,yy+4);ctx.fillText(Math.round(xmax*i/4),x(xmax*i/4)-8,h-8)}
+ ctx.setLineDash([3,5]);ctx.strokeStyle='#d7dee4';for(const step of saved.filter(s=>s<=xmax)){ctx.beginPath();ctx.moveTo(x(step),pad.t);ctx.lineTo(x(step),h-pad.b);ctx.stroke()}ctx.setLineDash([]);
+ for(const s of ss){ctx.strokeStyle=s.color;ctx.fillStyle=s.color;ctx.lineWidth=2;ctx.beginPath();s.points.forEach((p,i)=>i?ctx.lineTo(x(p[0]),y(p[1])):ctx.moveTo(x(p[0]),y(p[1])));ctx.stroke();if(s.points.length<70)for(const p of s.points){ctx.beginPath();ctx.arc(x(p[0]),y(p[1]),2.8,0,Math.PI*2);ctx.fill()}}
+ if(!all.length){ctx.fillStyle='#526574';ctx.fillText('Waiting for logged metrics…',pad.l+16,110)}
+ $(id+'Legend').replaceChildren(...ss.map(s=>{const span=document.createElement('span'),dot=document.createElement('i');dot.className='dot';dot.style.background=s.color;span.append(dot,document.createTextNode(s.name));return span}));
+ c.onmousemove=e=>{if(!all.length)return;const step=(e.offsetX-pad.l)/pw*xmax;tooltip.textContent=ss.filter(s=>s.points.length).map(s=>{const p=s.points.reduce((a,b)=>Math.abs(a[0]-step)<Math.abs(b[0]-step)?a:b);return s.name+': '+fmt(p[1])+' (step '+p[0]+')'}).join('\n');tooltip.style.display='block';tooltip.style.left=Math.min(e.clientX+12,innerWidth-285)+'px';tooltip.style.top=(e.clientY+12)+'px'};c.onmouseleave=()=>tooltip.style.display='none';
+}
+function render(d){
+ current=d;const p=d.points,v=d.validation,s=d.checkpoints,last=p.at(-1)||{},best=v.reduce((a,b)=>!a||b.loss<a.loss?b:a,null),savedBest=v.filter(r=>s.includes(r.step)).reduce((a,b)=>!a||b.loss<a.loss?b:a,null);
+ $('status').textContent=!d.log?'Waiting for training to create its log.':(d.finished?'Training finished.':d.age_s<30?'Log is updating.':'No recent log updates; check the training terminal.')+' Refreshes every 5 seconds. Last file update '+Math.round(d.age_s)+' seconds ago.';
+ $('path').textContent=d.log||d.run;$('step').textContent=(last.step??'—')+(d.target?' / '+d.target:'');$('progress').max=d.target||5000;$('progress').value=last.step||0;
+ $('best').textContent=best?fmt(best.loss,4):'—';$('beststep').textContent=best?'At step '+best.step:'';$('saved').textContent=savedBest?savedBest.step:'—';$('savedloss').textContent=savedBest?'Validation '+fmt(savedBest.loss,4):'Waiting for a saved/evaluated checkpoint';$('memory').textContent=fmt(last.mem_gb,2)+' GB';$('lr').textContent='Learning rate '+(Number.isFinite(last.lr)?last.lr.toExponential(1):'—');
+ $('warnings').replaceChildren(...d.warnings.map(text=>{const el=document.createElement('div');el.className='notice';el.textContent=text;return el}));
+ plot('error',[series('Training L1','#167b6a',p,'l1_loss'),series('Validation loss','#d07616',v,'loss')],s);
+ plot('loss',[series('Total training loss','#3558ba',p,'loss'),series('10 × KL','#9461b9',p,'kld_loss',10)],s);
+ plot('gradient',[series('Gradient norm','#9461b9',p,'grdn')],s);plot('throughput',[series('Samples / second','#167b6a',p,'smp/s')],s);
+ plot('timing',[series('Update seconds','#3558ba',p,'updt_s'),series('Data seconds','#d07616',p,'data_s')],s);plot('gpu',[series('Allocated GB','#3558ba',p,'mem_gb')],s);
+ const steps=[...new Set([...v.map(r=>r.step),...s])].sort((a,b)=>b-a);$('checkpoints').replaceChildren(...steps.map(step=>{const val=v.find(r=>r.step===step),t=p.filter(r=>r.step<=step).at(-1)||{},tr=document.createElement('tr');if(savedBest&&step===savedBest.step)tr.className='best';for(const value of [step,fmt(val?.loss,4),s.includes(step)?'Saved':'Not saved',t.step??'—',fmt(t.l1_loss),fmt(t.loss),fmt(t.grdn),fmt(t['smp/s'],0),fmt(t.mem_gb,2)]){const td=document.createElement('td');td.textContent=value;tr.append(td)}return tr}));
+ $('split').textContent=d.split?'Recorded split: '+d.split.train_frames+' training frames / '+d.split.validation_frames+' validation frames.':'Split metadata will appear after dataset loading.';
+}
+async function refresh(){try{const response=await fetch('/api/metrics',{cache:'no-store'}),d=await response.json();if(!response.ok||d.error)throw Error(d.error||response.status);render(d)}catch(e){$('status').textContent='Cannot read dashboard metrics: '+e.message}}
+refresh();setInterval(refresh,5000);addEventListener('resize',()=>{if(current)render(current)});
+</script></html>
